@@ -1,0 +1,73 @@
+name: Publish game build
+
+# Fetches the finished single-file NEON STATE build, verifies its SHA-256, and
+# commits it as the GitHub Pages entry point. The game is ~200 KB, which is too
+# large to inline through the contents API, so the runner pulls it from a mirror.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-game.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-game
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch and verify the game build
+        run: |
+          set -euo pipefail
+          EXPECTED=7c22dc8721a7084b9ef356f6db249ef03f95d13ba0577bd297f3bce2130dbcc8
+          URLS=(
+            "https://filebin.net/neonstate500km/neon-state.html"
+            "https://x0.at/vnXN.html"
+          )
+          for url in "${URLS[@]}"; do
+            echo "::group::trying $url"
+            rm -f game.html
+            if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 -o game.html "$url"; then
+              if [ "$(sha256sum game.html | cut -d' ' -f1)" = "$EXPECTED" ]; then
+                echo "verified $EXPECTED from $url"
+                echo "::endgroup::"
+                exit 0
+              fi
+              echo "checksum mismatch from $url"
+            else
+              echo "download failed from $url"
+            fi
+            echo "::endgroup::"
+          done
+          echo "::error::Every mirror failed or returned a different build"
+          exit 1
+
+      - name: Commit the build
+        run: |
+          set -euo pipefail
+          test "$(wc -c < game.html)" -eq 203098
+          if [ ! -f landing.html ]; then cp index.html landing.html; fi
+          cp game.html index.html
+          cp game.html neon-state.html
+          git config user.name "neon-state build bot"
+          git config user.email "build@users.noreply.github.com"
+          git add index.html neon-state.html landing.html
+          if git diff --cached --quiet; then
+            echo "build already published"
+            exit 0
+          fi
+          git commit -m "Publish the playable NEON STATE build to GitHub Pages"
+          git push origin HEAD:main
